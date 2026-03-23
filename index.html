@@ -2102,6 +2102,7 @@ function onClick(e) {
     const globeHits = raycaster.intersectObject(baseSphere);
     if (globeHits.length > 0) {
       // Convert 3D hit point to lat/lng (in globe-local space)
+      globeGrp.updateMatrixWorld(true);
       const localPt = globeGrp.worldToLocal(globeHits[0].point.clone());
       const ll = v2ll(localPt);
       const country = getCountryAtLatLng(ll.lat, ll.lng);
