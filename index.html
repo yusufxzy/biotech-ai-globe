@@ -1529,8 +1529,8 @@ function ll2v(lat, lng, r) {
 function v2ll(v) {
   const r = v.length();
   const lat = 90 - Math.acos(v.y / r) * 180 / Math.PI;
-  const lng = -(Math.atan2(-v.z, v.x) * 180 / Math.PI - 180);
-  return {lat, lng: ((lng + 180) % 360) - 180};
+  const lng = Math.atan2(v.z, -v.x) * 180 / Math.PI - 180;
+  return {lat, lng: lng < -180 ? lng + 360 : lng > 180 ? lng - 360 : lng};
 }
 
 // Point-in-polygon (ray casting)
