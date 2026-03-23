@@ -1562,19 +1562,24 @@ function buildCountryPolygons() {
   countries.features.forEach(f => {
     const id = parseInt(f.id) || 0;
     const name = COUNTRY_ID_MAP[id];
-    const rings = [];
+    const polys = []; // array of polygons, each = [exterior, ...holes]
     const g = f.geometry;
-    if (g.type === 'Polygon') g.coordinates.forEach(r => rings.push(r));
-    else if (g.type === 'MultiPolygon') g.coordinates.forEach(p => p.forEach(r => rings.push(r)));
-    countryPolygonsCache.push({id, name, rings, geometry: g});
+    if (g.type === 'Polygon') polys.push(g.coordinates);
+    else if (g.type === 'MultiPolygon') g.coordinates.forEach(p => polys.push(p));
+    countryPolygonsCache.push({id, name, polys, geometry: g});
   });
 }
 
 function getCountryAtLatLng(lat, lng) {
   buildCountryPolygons();
   for (const c of countryPolygonsCache) {
-    for (const ring of c.rings) {
-      if (pip(lng, lat, ring)) return c;
+    for (const poly of c.polys) {
+      if (!pip(lng, lat, poly[0])) continue; // not in exterior ring
+      let inHole = false;
+      for (let i = 1; i < poly.length; i++) {
+        if (pip(lng, lat, poly[i])) { inHole = true; break; }
+      }
+      if (!inHole) return c;
     }
   }
   return null;
@@ -1602,7 +1607,9 @@ function flyToCountry(countryName) {
   // Tighter clusters zoom closer
   const targetZoom = maxDist < 3 ? 1.9 : maxDist < 10 ? 2.1 : maxDist < 20 ? 2.4 : 2.7;
 
-  // Fly to centroid
+  // Fly to centroid — normalize rotation first to avoid float precision issues from auto-rotate
+  globeGrp.rotation.y = ((globeGrp.rotation.y % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
+  globeGrp.rotation.x = ((globeGrp.rotation.x % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
   const pos = ll2v(cLat, cLng, 1.005);
   const targetRotY = Math.atan2(pos.x, pos.z);
   const targetRotX = -Math.asin(pos.y / pos.length());
@@ -2051,6 +2058,7 @@ function onMouseMove(e) {
 }
 
 function onClick(e) {
+  if (entranceState.phase !== 'done') return;
   if (e.target.closest('.legend')||e.target.closest('.search-wrap')||e.target.closest('#panel')||e.target.closest('.filter-bar')||e.target.closest('.filter-toggle')||e.target.closest('.kbd-hint')||e.target.closest('.reset-btn')||e.target.closest('#colorPanel')||e.target.closest('.color-panel-toggle')||e.target.closest('.theme-toggle')) return;
 
   raycaster.setFromCamera(mouse, camera);
@@ -2163,8 +2171,9 @@ function selectCompany(idx) {
 }
 
 function flyToMarker(pos) {
-  // Compute target rotation to center marker
-  const worldPos = pos.clone().applyMatrix4(globeGrp.matrixWorld).normalize();
+  // Normalize rotation to avoid float precision issues from auto-rotate
+  globeGrp.rotation.y = ((globeGrp.rotation.y % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
+  globeGrp.rotation.x = ((globeGrp.rotation.x % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
   const targetRotY = Math.atan2(pos.x, pos.z);
   const targetRotX = -Math.asin(pos.y / pos.length());
 
