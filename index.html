@@ -1585,10 +1585,124 @@ function getCountryAtLatLng(lat, lng) {
   return null;
 }
 
+// 3D country pop-up mesh
+let selectedCountryMesh = null;
+let countryPopAnim = {active: false, startTime: 0, duration: 600};
+
+function removeCountryMesh() {
+  if (selectedCountryMesh) {
+    globeGrp.remove(selectedCountryMesh);
+    selectedCountryMesh.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+    selectedCountryMesh = null;
+  }
+}
+
+function createCountryMesh(countryName) {
+  removeCountryMesh();
+  buildCountryPolygons();
+  const entry = countryPolygonsCache.find(c => c.name === countryName);
+  if (!entry || !entry.polys.length) return;
+
+  const isDark = document.body.classList.contains('dark');
+  const innerR = 0.997, outerR = 1.025; // elevation amount
+  const group = new THREE.Group();
+
+  entry.polys.forEach(poly => {
+    const ring = poly[0]; // exterior ring
+    if (ring.length < 4) return;
+
+    // Sample ring at higher density for smooth sphere mapping
+    const sampled = [];
+    for (let i = 0; i < ring.length - 1; i++) {
+      const a = ring[i], b = ring[i+1];
+      const dist = Math.sqrt((b[0]-a[0])**2 + (b[1]-a[1])**2);
+      const steps = Math.max(1, Math.ceil(dist / 1.5));
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        sampled.push([a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t]);
+      }
+    }
+    if (sampled.length < 3) return;
+
+    // Build shell: two layers of vertices (inner + outer), connected by triangles
+    const n = sampled.length;
+
+    // Triangulate the polygon face using ear-clipping on flat coords
+    // First, create the top and bottom caps + side walls
+    const positions = [];
+    const normals = [];
+
+    // Side walls: quad strips between inner and outer rings
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const lng0 = sampled[i][0], lat0 = sampled[i][1];
+      const lng1 = sampled[j][0], lat1 = sampled[j][1];
+
+      const vi = ll2v(lat0, lng0, innerR);
+      const vo = ll2v(lat0, lng0, outerR);
+      const vi2 = ll2v(lat1, lng1, innerR);
+      const vo2 = ll2v(lat1, lng1, outerR);
+
+      // Normal for side face (approximate: cross product of edge vectors)
+      const edge = new THREE.Vector3().subVectors(vi2, vi);
+      const radial = new THREE.Vector3().subVectors(vo, vi);
+      const normal = new THREE.Vector3().crossVectors(edge, radial).normalize();
+
+      // Triangle 1: vi, vo, vo2
+      positions.push(vi.x,vi.y,vi.z, vo.x,vo.y,vo.z, vo2.x,vo2.y,vo2.z);
+      normals.push(normal.x,normal.y,normal.z, normal.x,normal.y,normal.z, normal.x,normal.y,normal.z);
+      // Triangle 2: vi, vo2, vi2
+      positions.push(vi.x,vi.y,vi.z, vo2.x,vo2.y,vo2.z, vi2.x,vi2.y,vi2.z);
+      normals.push(normal.x,normal.y,normal.z, normal.x,normal.y,normal.z, normal.x,normal.y,normal.z);
+    }
+
+    // Top cap: fan triangulation from centroid
+    let cLat = 0, cLng = 0;
+    sampled.forEach(p => { cLng += p[0]; cLat += p[1]; });
+    cLng /= n; cLat /= n;
+    const center = ll2v(cLat, cLng, outerR);
+    const centerNorm = center.clone().normalize();
+
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const p0 = ll2v(sampled[i][1], sampled[i][0], outerR);
+      const p1 = ll2v(sampled[j][1], sampled[j][0], outerR);
+      positions.push(center.x,center.y,center.z, p0.x,p0.y,p0.z, p1.x,p1.y,p1.z);
+      normals.push(centerNorm.x,centerNorm.y,centerNorm.z, centerNorm.x,centerNorm.y,centerNorm.z, centerNorm.x,centerNorm.y,centerNorm.z);
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+
+    const mat = new THREE.MeshPhongMaterial({
+      color: isDark ? 0x00ccff : 0x3388ff,
+      emissive: isDark ? 0x003344 : 0x1144aa,
+      emissiveIntensity: isDark ? 0.6 : 0.3,
+      transparent: true,
+      opacity: 0.0, // starts invisible, animated in
+      shininess: 60,
+      side: THREE.DoubleSide,
+      depthWrite: true
+    });
+
+    const mesh = new THREE.Mesh(geom, mat);
+    group.add(mesh);
+  });
+
+  if (group.children.length === 0) return;
+  selectedCountryMesh = group;
+  globeGrp.add(group);
+
+  // Start pop animation
+  countryPopAnim = {active: true, startTime: performance.now(), duration: 600};
+}
+
 // Fly to a country
 let selectedCountry = null;
 function flyToCountry(countryName) {
   selectedCountry = countryName;
+  createCountryMesh(countryName);
   const companies = DATA.filter(d => d.country === countryName && d.lat && d.lng);
   if (companies.length === 0) return;
 
@@ -1612,7 +1726,7 @@ function flyToCountry(countryName) {
   globeGrp.rotation.x = ((globeGrp.rotation.x % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
   const pos = ll2v(cLat, cLng, 1.005);
   const targetRotY = Math.atan2(pos.x, pos.z);
-  const targetRotX = -Math.asin(pos.y / pos.length());
+  const targetRotX = Math.asin(pos.y / pos.length());
 
   flyTo = {
     active: true,
@@ -2114,6 +2228,7 @@ function onClick(e) {
       const localPt = globeGrp.worldToLocal(globeHits[0].point.clone());
       const ll = v2ll(localPt);
       const country = getCountryAtLatLng(ll.lat, ll.lng);
+
       if (country && country.name) {
         const hasCompanies = DATA.some(d => d.country === country.name);
         if (hasCompanies) {
@@ -2175,7 +2290,7 @@ function flyToMarker(pos) {
   globeGrp.rotation.y = ((globeGrp.rotation.y % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
   globeGrp.rotation.x = ((globeGrp.rotation.x % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
   const targetRotY = Math.atan2(pos.x, pos.z);
-  const targetRotX = -Math.asin(pos.y / pos.length());
+  const targetRotX = Math.asin(pos.y / pos.length());
 
   flyTo = {
     active: true,
@@ -2215,6 +2330,8 @@ function openPanel() {
 }
 
 function resetAll() {
+  removeCountryMesh();
+  selectedCountry = null;
   searchEl.value = ''; searchQuery = '';
   clearBtn.classList.remove('show');
   filterCountry = ''; countrySelect.value = '';
@@ -2321,6 +2438,16 @@ function animate() {
     globeGrp.rotation.y = flyTo.startRotY + (flyTo.targetRotY - flyTo.startRotY) * e;
     camera.position.z = flyTo.startZoom + (flyTo.targetZoom - flyTo.startZoom) * e;
     if (t >= 1) { flyTo.active = false; lastInteract = Date.now(); }
+  }
+
+  // Country pop-up animation
+  if (countryPopAnim.active && selectedCountryMesh) {
+    const t = Math.min(1, (now - countryPopAnim.startTime) / countryPopAnim.duration);
+    const e = 1 - Math.pow(1 - t, 3); // easeOutCubic
+    selectedCountryMesh.traverse(c => {
+      if (c.material) c.material.opacity = e * 0.75;
+    });
+    if (t >= 1) countryPopAnim.active = false;
   }
 
   // Inertia
