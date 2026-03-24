@@ -295,25 +295,34 @@ function buildCountryMeshes(features) {
         wallMeshes.push(new THREE.Mesh(wGeom, wallMat));
       }
 
-      // Top cap (simple triangulation using fan from centroid)
+      // Top cap — proper triangulation for concave polygons
       if (ring.length > 3) {
-        const topPts = ring.map(c => ll2v(c[1], c[0], R_TOP));
-        const center = new THREE.Vector3();
-        topPts.forEach(p => center.add(p));
-        center.divideScalar(topPts.length);
-
-        const capVerts = [];
-        const capIndices = [];
-        capVerts.push(center.x, center.y, center.z);
-        topPts.forEach(p => capVerts.push(p.x, p.y, p.z));
-        for (let i = 1; i < topPts.length; i++) {
-          capIndices.push(0, i, i + 1 < topPts.length + 1 ? i + 1 : 1);
+        let ringClean = ring;
+        // Remove duplicate closing point
+        if (ringClean.length > 1 && ringClean[0][0] === ringClean[ringClean.length-1][0] && ringClean[0][1] === ringClean[ringClean.length-1][1]) {
+          ringClean = ringClean.slice(0, -1);
         }
-        const capGeom = new THREE.BufferGeometry();
-        capGeom.setAttribute('position', new THREE.Float32BufferAttribute(capVerts, 3));
-        capGeom.setIndex(capIndices);
-        capGeom.computeVertexNormals();
-        topMeshes.push(new THREE.Mesh(capGeom, highlightMat));
+        // Handle antimeridian: shift negative lngs for rings crossing 180
+        let hasAM = false;
+        for (let i = 0; i < ringClean.length - 1; i++) {
+          if (Math.abs(ringClean[i][0] - ringClean[i+1][0]) > 180) { hasAM = true; break; }
+        }
+        const contour2D = ringClean.map(c => new THREE.Vector2(hasAM && c[0] < 0 ? c[0] + 360 : c[0], c[1]));
+        try {
+          const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
+          if (faces.length > 0) {
+            const topPts = ringClean.map(c => ll2v(c[1], c[0], R_TOP));
+            const capVerts = [];
+            topPts.forEach(p => capVerts.push(p.x, p.y, p.z));
+            const capIndices = [];
+            faces.forEach(f => capIndices.push(f[0], f[1], f[2]));
+            const capGeom = new THREE.BufferGeometry();
+            capGeom.setAttribute('position', new THREE.Float32BufferAttribute(capVerts, 3));
+            capGeom.setIndex(capIndices);
+            capGeom.computeVertexNormals();
+            topMeshes.push(new THREE.Mesh(capGeom, highlightMat));
+          }
+        } catch(e) {} // Skip rings that fail triangulation
       }
     });
 
@@ -387,22 +396,33 @@ function updateCountryElevation(group, t) {
       wallMeshes.push(wm);
     }
 
-    // Top cap
+    // Top cap — proper triangulation for concave polygons
     if (ring.length > 3) {
-      const topPts = ring.map(c => ll2v(c[1], c[0], rTop));
-      const center = new THREE.Vector3();
-      topPts.forEach(p => center.add(p));
-      center.divideScalar(topPts.length);
-      const capV = [center.x,center.y,center.z];
-      topPts.forEach(p => capV.push(p.x,p.y,p.z));
-      const capIdx = [];
-      for (let i = 1; i < topPts.length; i++) capIdx.push(0, i, i+1 < topPts.length+1 ? i+1 : 1);
-      const cg = new THREE.BufferGeometry();
-      cg.setAttribute('position', new THREE.Float32BufferAttribute(capV, 3));
-      cg.setIndex(capIdx);
-      const cm = new THREE.Mesh(cg, highlightMat);
-      group.add(cm);
-      topMeshes.push(cm);
+      let ringClean = ring;
+      if (ringClean.length > 1 && ringClean[0][0] === ringClean[ringClean.length-1][0] && ringClean[0][1] === ringClean[ringClean.length-1][1]) {
+        ringClean = ringClean.slice(0, -1);
+      }
+      let hasAM = false;
+      for (let i = 0; i < ringClean.length - 1; i++) {
+        if (Math.abs(ringClean[i][0] - ringClean[i+1][0]) > 180) { hasAM = true; break; }
+      }
+      const contour2D = ringClean.map(c => new THREE.Vector2(hasAM && c[0] < 0 ? c[0] + 360 : c[0], c[1]));
+      try {
+        const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
+        if (faces.length > 0) {
+          const topPts = ringClean.map(c => ll2v(c[1], c[0], rTop));
+          const capV = [];
+          topPts.forEach(p => capV.push(p.x, p.y, p.z));
+          const capIdx = [];
+          faces.forEach(f => capIdx.push(f[0], f[1], f[2]));
+          const cg = new THREE.BufferGeometry();
+          cg.setAttribute('position', new THREE.Float32BufferAttribute(capV, 3));
+          cg.setIndex(capIdx);
+          const cm = new THREE.Mesh(cg, highlightMat);
+          group.add(cm);
+          topMeshes.push(cm);
+        }
+      } catch(e) {}
     }
   });
 
