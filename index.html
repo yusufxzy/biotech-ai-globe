@@ -10,6 +10,7 @@
 <script src="https://unpkg.com/topojson-client@3/dist/topojson-client.min.js"></script>
 <script src="https://d3js.org/d3-array.v2.min.js"></script>
 <script src="https://d3js.org/d3-geo.v2.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',system-ui,sans-serif;overflow:hidden;width:100vw;height:100vh;transition:background 0.6s}
@@ -198,6 +199,26 @@ shadow.position.y = -1.15;
 scene.add(shadow);
 
 // ─── HELPERS ───
+// Triangulate a ring of [lng, lat] coords into face indices using earcut
+function triangulateRing(ring) {
+  let coords = ring;
+  // Remove duplicate closing point
+  if (coords.length > 1 && coords[0][0] === coords[coords.length-1][0] && coords[0][1] === coords[coords.length-1][1]) {
+    coords = coords.slice(0, -1);
+  }
+  if (coords.length < 3) return { indices: [], coords };
+  // Handle antimeridian
+  let hasAM = false;
+  for (let i = 0; i < coords.length - 1; i++) {
+    if (Math.abs(coords[i][0] - coords[i+1][0]) > 180) { hasAM = true; break; }
+  }
+  // Flatten to 2D for earcut
+  const flat = [];
+  coords.forEach(c => { flat.push(hasAM && c[0] < 0 ? c[0] + 360 : c[0], c[1]); });
+  const indices = earcut(flat);
+  return { indices, coords };
+}
+
 function ll2v(lat, lng, radius) {
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = (lng + 180) * (Math.PI / 180);
@@ -295,34 +316,19 @@ function buildCountryMeshes(features) {
         wallMeshes.push(new THREE.Mesh(wGeom, wallMat));
       }
 
-      // Top cap — proper triangulation for concave polygons
+      // Top cap — earcut triangulation for concave polygons
       if (ring.length > 3) {
-        let ringClean = ring;
-        // Remove duplicate closing point
-        if (ringClean.length > 1 && ringClean[0][0] === ringClean[ringClean.length-1][0] && ringClean[0][1] === ringClean[ringClean.length-1][1]) {
-          ringClean = ringClean.slice(0, -1);
+        const { indices, coords: rc } = triangulateRing(ring);
+        if (indices.length > 0) {
+          const topPts = rc.map(c => ll2v(c[1], c[0], R_TOP));
+          const capVerts = [];
+          topPts.forEach(p => capVerts.push(p.x, p.y, p.z));
+          const capGeom = new THREE.BufferGeometry();
+          capGeom.setAttribute('position', new THREE.Float32BufferAttribute(capVerts, 3));
+          capGeom.setIndex(indices);
+          capGeom.computeVertexNormals();
+          topMeshes.push(new THREE.Mesh(capGeom, highlightMat));
         }
-        // Handle antimeridian: shift negative lngs for rings crossing 180
-        let hasAM = false;
-        for (let i = 0; i < ringClean.length - 1; i++) {
-          if (Math.abs(ringClean[i][0] - ringClean[i+1][0]) > 180) { hasAM = true; break; }
-        }
-        const contour2D = ringClean.map(c => new THREE.Vector2(hasAM && c[0] < 0 ? c[0] + 360 : c[0], c[1]));
-        try {
-          const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
-          if (faces.length > 0) {
-            const topPts = ringClean.map(c => ll2v(c[1], c[0], R_TOP));
-            const capVerts = [];
-            topPts.forEach(p => capVerts.push(p.x, p.y, p.z));
-            const capIndices = [];
-            faces.forEach(f => capIndices.push(f[0], f[1], f[2]));
-            const capGeom = new THREE.BufferGeometry();
-            capGeom.setAttribute('position', new THREE.Float32BufferAttribute(capVerts, 3));
-            capGeom.setIndex(capIndices);
-            capGeom.computeVertexNormals();
-            topMeshes.push(new THREE.Mesh(capGeom, highlightMat));
-          }
-        } catch(e) {} // Skip rings that fail triangulation
       }
     });
 
@@ -357,7 +363,7 @@ function updateCountryElevation(group, t) {
   const { wallMeshes, topMeshes, coords, wallMat, highlightMat } = group.userData;
 
   wallMat.opacity = t * 0.4;
-  highlightMat.opacity = t * 0.6;
+  highlightMat.opacity = t * 0.85;
 
   wallMeshes.forEach(m => { m.visible = t > 0.01; });
   topMeshes.forEach(m => { m.visible = t > 0.01; });
@@ -396,33 +402,20 @@ function updateCountryElevation(group, t) {
       wallMeshes.push(wm);
     }
 
-    // Top cap — proper triangulation for concave polygons
+    // Top cap — earcut triangulation for concave polygons
     if (ring.length > 3) {
-      let ringClean = ring;
-      if (ringClean.length > 1 && ringClean[0][0] === ringClean[ringClean.length-1][0] && ringClean[0][1] === ringClean[ringClean.length-1][1]) {
-        ringClean = ringClean.slice(0, -1);
+      const { indices, coords: rc } = triangulateRing(ring);
+      if (indices.length > 0) {
+        const topPts = rc.map(c => ll2v(c[1], c[0], rTop));
+        const capV = [];
+        topPts.forEach(p => capV.push(p.x, p.y, p.z));
+        const cg = new THREE.BufferGeometry();
+        cg.setAttribute('position', new THREE.Float32BufferAttribute(capV, 3));
+        cg.setIndex(indices);
+        const cm = new THREE.Mesh(cg, highlightMat);
+        group.add(cm);
+        topMeshes.push(cm);
       }
-      let hasAM = false;
-      for (let i = 0; i < ringClean.length - 1; i++) {
-        if (Math.abs(ringClean[i][0] - ringClean[i+1][0]) > 180) { hasAM = true; break; }
-      }
-      const contour2D = ringClean.map(c => new THREE.Vector2(hasAM && c[0] < 0 ? c[0] + 360 : c[0], c[1]));
-      try {
-        const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
-        if (faces.length > 0) {
-          const topPts = ringClean.map(c => ll2v(c[1], c[0], rTop));
-          const capV = [];
-          topPts.forEach(p => capV.push(p.x, p.y, p.z));
-          const capIdx = [];
-          faces.forEach(f => capIdx.push(f[0], f[1], f[2]));
-          const cg = new THREE.BufferGeometry();
-          cg.setAttribute('position', new THREE.Float32BufferAttribute(capV, 3));
-          cg.setIndex(capIdx);
-          const cm = new THREE.Mesh(cg, highlightMat);
-          group.add(cm);
-          topMeshes.push(cm);
-        }
-      } catch(e) {}
     }
   });
 
